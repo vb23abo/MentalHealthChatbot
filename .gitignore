@@ -1,0 +1,8 @@
+.venv/
+.vendor/
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
+node_modules/
+/data/

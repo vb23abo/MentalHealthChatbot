@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Support chat</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3efe7;
+      --ink: #1c1917;
+      --muted: #5c564e;
+      --paper: #fffdf8;
+      --line: #e2d9cc;
+      --accent: #0f5c57;
+      --accent-ink: #f7fffe;
+      --urgent: #7a1f1f;
+      --urgent-bg: #fdecec;
+      --you: #e7f2f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font: 17px/1.5 "Segoe UI", system-ui, sans-serif;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 32px; }
+    h1 { margin: 0 0 6px; font-size: 1.7rem; letter-spacing: -0.02em; }
+    header p, .hint { margin: 0; color: var(--muted); }
+    .resources, .gate, main {
+      margin-top: 16px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+    }
+    .resources { padding: 14px 16px; border-left: 4px solid var(--urgent); }
+    .resources h2, .gate h2 { margin: 0 0 6px; font-size: 0.95rem; }
+    .resources p, .gate p { margin: 0 0 8px; }
+    .resources a { color: var(--urgent); }
+    .gate { padding: 16px; }
+    .gate ul { margin: 8px 0 12px; padding-left: 18px; }
+    .account { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    .account label { display: flex; flex-direction: column; gap: 4px; font-size: 0.95rem; }
+    .account input {
+      font: inherit; padding: 8px 10px; border: 1px solid var(--line); background: #fff; color: inherit;
+    }
+    .account-error { color: var(--urgent); min-height: 1.4em; margin: 0; }
+    .who { margin: 0; padding: 10px 16px 0; color: var(--muted); font-size: 0.95rem; }
+    main { min-height: 420px; display: none; flex-direction: column; }
+    main.open { display: flex; }
+    #transcript {
+      flex: 1;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .bubble { max-width: 90%; padding: 10px 12px; white-space: pre-wrap; }
+    .bubble.you { align-self: flex-end; background: var(--you); }
+    .bubble.assistant { align-self: flex-start; background: #f7f4ee; border: 1px solid var(--line); }
+    .bubble.urgent { border-color: var(--urgent); background: var(--urgent-bg); }
+    .links { margin: 8px 0 0; padding-left: 18px; }
+    .links a { color: var(--accent); }
+    form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+    textarea {
+      flex: 1; resize: vertical; min-height: 64px; padding: 10px;
+      font: inherit; color: inherit; background: #fff; border: 1px solid var(--line);
+    }
+    textarea:focus, button:focus { outline: 3px solid #0f5c57; outline-offset: 2px; }
+    button {
+      font: inherit; background: var(--accent); color: var(--accent-ink);
+      border: 0; padding: 10px 14px; cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .actions { display: flex; flex-direction: column; gap: 8px; }
+    .hint { margin-top: 8px; font-size: 0.9rem; }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Support chat</h1>
+      <p>A place to talk through what you feel. This is not therapy, a diagnosis, or emergency care.</p>
+    </header>
+    <section class="resources" aria-label="Crisis resources">
+      <h2>If you might hurt yourself or someone else</h2>
+      <p>Contact local emergency services. In the US, call or text <a href="tel:988">988</a> (Suicide &amp; Crisis Lifeline). Elsewhere, use the <a href="https://www.iasp.info/suicidalthoughts/">IASP helpline directory</a>.</p>
+    </section>
+
+    <section class="gate" id="gate">
+      <h2>Your account</h2>
+      <p>Sign in so you can leave and come back to this chat. Recent messages stay in a database on this computer. This is not therapy, a diagnosis, or emergency care.</p>
+      <form class="account" id="account">
+        <label>Username
+          <input id="username" name="username" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <p class="account-error" id="account-error" role="alert"></p>
+        <button type="submit">Sign in</button>
+        <button type="button" class="secondary" id="register">Create account</button>
+      </form>
+    </section>
+
+    <main id="chat-panel">
+      <p class="who" id="who"></p>
+      <div id="transcript" role="log" aria-live="polite" aria-relevant="additions"></div>
+      <form id="chat">
+        <label class="sr" for="message">Your message</label>
+        <textarea id="message" name="message" placeholder="Say what's going on. Or type check-in." required></textarea>
+        <div class="actions">
+          <button type="submit">Send</button>
+          <button type="button" class="secondary" id="checkin">Check-in</button>
+          <button type="button" class="secondary" id="forget">Delete saved chats</button>
+          <button type="button" class="secondary" id="signout">Sign out</button>
+        </div>
+      </form>
+    </main>
+    <p class="hint">Saved messages expire after 30 days. A check-in score is not a diagnosis. If you are in danger, use the resources above rather than this chat.</p>
+  </div>
+  <script>
+    const gate = document.getElementById("gate");
+    const panel = document.getElementById("chat-panel");
+    const transcript = document.getElementById("transcript");
+    const form = document.getElementById("chat");
+    const input = document.getElementById("message");
+    const accountError = document.getElementById("account-error");
+    const TOKEN_KEY = "supportToken";
+    let token = localStorage.getItem(TOKEN_KEY);
+
+    function authHeaders() {
+      return { "Content-Type": "application/json", "Authorization": "Bearer " + token };
+    }
+
+    function visibleText(text, disclaimer) {
+      if (disclaimer && text && text.endsWith(disclaimer)) {
+        return text.slice(0, -disclaimer.length).trim();
+      }
+      return text;
+    }
+
+    function showChat(memory) {
+      gate.hidden = true;
+      panel.classList.add("open");
+      document.getElementById("who").textContent = memory && memory.username ? "Signed in as " + memory.username : "";
+      transcript.replaceChildren();
+      if (memory && memory.resume) {
+        addBubble("assistant", memory.resume, memory.last_safety && memory.last_safety !== "none");
+      }
+      (memory && memory.turns ? memory.turns : []).forEach((turn) => {
+        addBubble(
+          turn.role === "user" ? "you" : "assistant",
+          visibleText(turn.text, memory.disclaimer),
+          turn.safety && turn.safety !== "none"
+        );
+      });
+      input.focus();
+    }
+
+    function showGate() {
+      token = null;
+      localStorage.removeItem(TOKEN_KEY);
+      panel.classList.remove("open");
+      gate.hidden = false;
+    }
+
+    async function openSession() {
+      const response = await fetch("/memory", { headers: authHeaders() });
+      if (response.status === 401) {
+        showGate();
+        return;
+      }
+      const data = await response.json();
+      if (!response.ok) {
+        accountError.textContent = data.error || "Could not open the saved chat.";
+        return;
+      }
+      showChat(data);
+    }
+
+    function addBubble(role, text, urgent, resources) {
+      const bubble = document.createElement("div");
+      bubble.className = "bubble " + (role === "you" ? "you" : "assistant");
+      if (urgent) bubble.classList.add("urgent");
+      bubble.textContent = text;
+      if (resources && resources.length) {
+        const list = document.createElement("ul");
+        list.className = "links";
+        resources.forEach((item) => {
+          const li = document.createElement("li");
+          const label = item.name + (item.contact ? ": " + item.contact : "");
+          if (item.url) {
+            const link = document.createElement("a");
+            link.href = item.url;
+            link.rel = "noopener noreferrer";
+            link.target = "_blank";
+            link.textContent = label;
+            li.appendChild(link);
+          } else {
+            li.textContent = label;
+          }
+          list.appendChild(li);
+        });
+        bubble.appendChild(list);
+      }
+      transcript.appendChild(bubble);
+      bubble.scrollIntoView({ block: "nearest" });
+    }
+
+    async function send(message) {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      addBubble("you", trimmed, false);
+      input.value = "";
+      input.disabled = true;
+      try {
+        const response = await fetch("/conversation", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ message: trimmed })
+        });
+        const data = await response.json();
+        if (response.status === 401) {
+          showGate();
+          return;
+        }
+        if (!response.ok) {
+          addBubble("assistant", data.error || "Something went wrong.", false);
+          return;
+        }
+        addBubble("assistant", visibleText(data.response || "", data.disclaimer), data.urgent, data.resources);
+      } catch (_err) {
+        addBubble("assistant", "The server didn't respond. Check that the app is running.", false);
+      } finally {
+        input.disabled = false;
+        input.focus();
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      send(input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    document.getElementById("checkin").addEventListener("click", () => send("check-in"));
+    document.getElementById("forget").addEventListener("click", async () => {
+      await fetch("/memory/delete", { method: "POST", headers: authHeaders() });
+      transcript.replaceChildren();
+      input.focus();
+    });
+    document.getElementById("signout").addEventListener("click", showGate);
+
+    document.getElementById("account").addEventListener("submit", (event) => {
+      event.preventDefault();
+      authenticate("/login");
+    });
+    document.getElementById("register").addEventListener("click", () => authenticate("/register"));
+
+    async function authenticate(path) {
+      accountError.textContent = "";
+      const username = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        accountError.textContent = data.error || "Could not sign in.";
+        return;
+      }
+      token = data.token;
+      localStorage.setItem(TOKEN_KEY, token);
+      document.getElementById("password").value = "";
+      await openSession();
+    }
+
+    if (token) openSession();
+  </script>
+</body>
+</html>
