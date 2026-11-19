@@ -17,10 +17,12 @@ from pathlib import Path
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from supportchat.helplines import crisis_sentence, normalize_country
 from supportchat.session import Session
 
 RECENT_LIMIT = 30
 RETENTION_DAYS = 30
+TOKEN_DAYS = 7
 
 TOPIC_PHRASES = {
     "sleep": "sleep",
@@ -39,11 +41,12 @@ class AuthError(ValueError):
     """The username or password cannot be accepted."""
 
 
-def resume_line(topic: str | None, safety: str) -> str | None:
+def resume_line(topic: str | None, safety: str, country: str = "US") -> str | None:
     if safety == "self_harm":
         return (
-            "You're back. If you might hurt yourself, call or text 988 in the US, "
-            "or use your local emergency number. If you want to talk, I'm here."
+            "You're back. If you might hurt yourself, "
+            + crisis_sentence(country)
+            + " If you want to talk, I'm here."
         )
     phrase = TOPIC_PHRASES.get(topic or "")
     if not phrase:
@@ -71,9 +74,16 @@ def _check_password(password: str) -> None:
 
 
 class MemoryStore:
-    def __init__(self, path: str, recent_limit: int = RECENT_LIMIT, retention_days: int = RETENTION_DAYS) -> None:
+    def __init__(
+        self,
+        path: str,
+        recent_limit: int = RECENT_LIMIT,
+        retention_days: int = RETENTION_DAYS,
+        token_days: int = TOKEN_DAYS,
+    ) -> None:
         self.recent_limit = recent_limit
         self.retention_days = retention_days
+        self.token_days = token_days
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -102,6 +112,8 @@ class MemoryStore:
                 checkin_answers TEXT NOT NULL DEFAULT '[]',
                 last_checkin TEXT,
                 last_safety TEXT NOT NULL DEFAULT 'none',
+                visit_note TEXT,
+                country TEXT NOT NULL DEFAULT 'US',
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS turns (
@@ -114,6 +126,8 @@ class MemoryStore:
             );
             """
         )
+        self._ensure_visit_note()
+        self._ensure_country()
         self._conn.commit()
 
     def register(self, username: str, password: str) -> str:
@@ -154,29 +168,47 @@ class MemoryStore:
     def user_id_for_token(self, token: str) -> int | None:
         if not token:
             return None
+        digest = _hash_token(token)
         with self._lock:
             row = self._conn.execute(
-                "SELECT user_id FROM tokens WHERE token_hash = ?",
-                (_hash_token(token),),
+                "SELECT user_id, created_at FROM tokens WHERE token_hash = ?",
+                (digest,),
             ).fetchone()
-        return None if row is None else int(row["user_id"])
+            if row is None:
+                return None
+            created = datetime.fromisoformat(row["created_at"])
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - created
+            if age >= timedelta(days=self.token_days):
+                self._conn.execute("DELETE FROM tokens WHERE token_hash = ?", (digest,))
+                self._conn.commit()
+                return None
+            return int(row["user_id"])
 
     def load_session(self, user_id: int) -> Session:
         with self._lock:
             self._purge_old(user_id)
             profile = self._profile(user_id)
             self._conn.commit()
-        answers = json.loads(profile["checkin_answers"] or "[]")
-        last_checkin = json.loads(profile["last_checkin"]) if profile["last_checkin"] else None
-        return Session(
-            user_id=str(user_id),
-            user_turns=profile["user_turns"],
-            checkin_step=profile["checkin_step"],
-            checkin_answers=answers,
-            last_checkin=last_checkin,
-            last_topic=profile["last_topic"],
-            topic_turns=profile["topic_turns"],
-        )
+            answers = json.loads(profile["checkin_answers"] or "[]")
+            last_checkin = json.loads(profile["last_checkin"]) if profile["last_checkin"] else None
+            lines = self._conn.execute(
+                "SELECT text FROM turns WHERE user_id = ? AND role = 'user' ORDER BY id ASC",
+                (user_id,),
+            ).fetchall()
+            return Session(
+                user_id=str(user_id),
+                user_turns=profile["user_turns"],
+                checkin_step=profile["checkin_step"],
+                checkin_answers=answers,
+                last_checkin=last_checkin,
+                last_topic=profile["last_topic"],
+                topic_turns=profile["topic_turns"],
+                user_lines=[row["text"] for row in lines],
+                visit_note=profile["visit_note"],
+                country=profile["country"] or "US",
+            )
 
     def save_exchange(self, user_id: int, session: Session, user_text: str, assistant_text: str, safety: str) -> None:
         now = _now()
@@ -194,7 +226,7 @@ class MemoryStore:
                 UPDATE profiles SET
                     last_topic = ?, topic_turns = ?, user_turns = ?,
                     checkin_step = ?, checkin_answers = ?, last_checkin = ?,
-                    last_safety = ?, updated_at = ?
+                    last_safety = ?, visit_note = ?, country = ?, updated_at = ?
                 WHERE user_id = ?
                 """,
                 (
@@ -205,6 +237,8 @@ class MemoryStore:
                     json.dumps(session.checkin_answers),
                     json.dumps(session.last_checkin) if session.last_checkin else None,
                     safety,
+                    session.visit_note,
+                    normalize_country(session.country),
                     now,
                     user_id,
                 ),
@@ -224,9 +258,11 @@ class MemoryStore:
             self._conn.commit()
         return {
             "username": user["username"],
-            "resume": resume_line(profile["last_topic"], profile["last_safety"]),
+            "resume": resume_line(profile["last_topic"], profile["last_safety"], profile["country"] or "US"),
+            "country": profile["country"] or "US",
             "last_topic": profile["last_topic"],
             "last_safety": profile["last_safety"],
+            "visit_note": profile["visit_note"],
             "turns": [
                 {"role": row["role"], "text": row["text"], "safety": row["safety"]}
                 for row in turns
@@ -242,12 +278,32 @@ class MemoryStore:
                 UPDATE profiles SET
                     last_topic = NULL, topic_turns = 0, user_turns = 0,
                     checkin_step = NULL, checkin_answers = '[]', last_checkin = NULL,
-                    last_safety = 'none', updated_at = ?
+                    last_safety = 'none', visit_note = NULL, updated_at = ?
                 WHERE user_id = ?
                 """,
                 (now, user_id),
             )
             self._conn.commit()
+
+    def _ensure_visit_note(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profiles)")}
+        if columns and "visit_note" not in columns:
+            self._conn.execute("ALTER TABLE profiles ADD COLUMN visit_note TEXT")
+
+    def _ensure_country(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profiles)")}
+        if columns and "country" not in columns:
+            self._conn.execute("ALTER TABLE profiles ADD COLUMN country TEXT NOT NULL DEFAULT 'US'")
+
+    def set_country(self, user_id: int, country: str) -> str:
+        code = normalize_country(country)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE profiles SET country = ?, updated_at = ? WHERE user_id = ?",
+                (code, _now(), user_id),
+            )
+            self._conn.commit()
+        return code
 
     def _issue_token(self, user_id: int, now: str) -> str:
         token = secrets.token_urlsafe(32)

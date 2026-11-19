@@ -38,6 +38,10 @@
     .resources h2, .gate h2 { margin: 0 0 6px; font-size: 0.95rem; }
     .resources p, .gate p { margin: 0 0 8px; }
     .resources a { color: var(--urgent); }
+    .resources label { display: flex; flex-direction: column; gap: 4px; font-size: 0.95rem; margin-bottom: 8px; }
+    .resources select {
+      font: inherit; padding: 8px 10px; border: 1px solid var(--line); background: #fff; color: inherit; max-width: 320px;
+    }
     .gate { padding: 16px; }
     .gate ul { margin: 8px 0 12px; padding-left: 18px; }
     .account { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
@@ -87,12 +91,25 @@
     </header>
     <section class="resources" aria-label="Crisis resources">
       <h2>If you might hurt yourself or someone else</h2>
-      <p>Contact local emergency services. In the US, call or text <a href="tel:988">988</a> (Suicide &amp; Crisis Lifeline). Elsewhere, use the <a href="https://www.iasp.info/suicidalthoughts/">IASP helpline directory</a>.</p>
+      <label for="country">Country for the crisis line
+        <select id="country" name="country">
+          <option value="US" selected>United States</option>
+          <option value="GB">United Kingdom</option>
+          <option value="IE">Ireland</option>
+          <option value="CA">Canada</option>
+          <option value="AU">Australia</option>
+          <option value="NZ">New Zealand</option>
+          <option value="IN">India</option>
+          <option value="OTHER">Somewhere else</option>
+        </select>
+      </label>
+      <p id="crisis-line">Contact local emergency services. In the US, call or text <a href="tel:988">988</a> (Suicide &amp; Crisis Lifeline). Elsewhere, use the <a href="https://www.iasp.info/suicidalthoughts/">IASP helpline directory</a>.</p>
     </section>
 
     <section class="gate" id="gate">
       <h2>Your account</h2>
       <p>Sign in so you can leave and come back to this chat. Recent messages stay in a database on this computer. This is not therapy, a diagnosis, or emergency care.</p>
+      <p>This chat is for adults. If you are under 18, tell a parent, caregiver, or another trusted adult, and use the crisis line above or the IASP helpline directory.</p>
       <form class="account" id="account">
         <label>Username
           <input id="username" name="username" autocomplete="username" required>
@@ -108,13 +125,15 @@
 
     <main id="chat-panel">
       <p class="who" id="who"></p>
+      <p class="who">This chat is for adults. If you are under 18, tell a parent, caregiver, or another trusted adult, and use the crisis line above or the IASP helpline directory.</p>
       <div id="transcript" role="log" aria-live="polite" aria-relevant="additions"></div>
       <form id="chat">
         <label class="sr" for="message">Your message</label>
-        <textarea id="message" name="message" placeholder="Say what's going on. Or type check-in." required></textarea>
+        <textarea id="message" name="message" maxlength="2000" placeholder="Say what's going on. Or type check-in." required></textarea>
         <div class="actions">
           <button type="submit">Send</button>
           <button type="button" class="secondary" id="checkin">Check-in</button>
+          <button type="button" class="secondary" id="copy-note" hidden>Copy notes for a clinician</button>
           <button type="button" class="secondary" id="forget">Delete saved chats</button>
           <button type="button" class="secondary" id="signout">Sign out</button>
         </div>
@@ -130,7 +149,10 @@
     const input = document.getElementById("message");
     const accountError = document.getElementById("account-error");
     const TOKEN_KEY = "supportToken";
+    const COUNTRY_KEY = "supportCountry";
+    const copyNote = document.getElementById("copy-note");
     let token = localStorage.getItem(TOKEN_KEY);
+    let noteText = "";
 
     function authHeaders() {
       return { "Content-Type": "application/json", "Authorization": "Bearer " + token };
@@ -151,6 +173,7 @@
       if (memory && memory.resume) {
         addBubble("assistant", memory.resume, memory.last_safety && memory.last_safety !== "none");
       }
+      showNote(memory && memory.visit_note);
       (memory && memory.turns ? memory.turns : []).forEach((turn) => {
         addBubble(
           turn.role === "user" ? "you" : "assistant",
@@ -221,7 +244,7 @@
         const response = await fetch("/conversation", {
           method: "POST",
           headers: authHeaders(),
-          body: JSON.stringify({ message: trimmed })
+          body: JSON.stringify({ message: trimmed, country: document.getElementById("country").value })
         });
         const data = await response.json();
         if (response.status === 401) {
@@ -233,6 +256,7 @@
           return;
         }
         addBubble("assistant", visibleText(data.response || "", data.disclaimer), data.urgent, data.resources);
+        if ("visit_note" in data) showNote(data.visit_note);
       } catch (_err) {
         addBubble("assistant", "The server didn't respond. Check that the app is running.", false);
       } finally {
@@ -251,10 +275,26 @@
         form.requestSubmit();
       }
     });
+    function showNote(note) {
+      noteText = note || "";
+      copyNote.hidden = !noteText;
+      copyNote.textContent = "Copy notes for a clinician";
+    }
+
     document.getElementById("checkin").addEventListener("click", () => send("check-in"));
+    copyNote.addEventListener("click", async () => {
+      if (!noteText) return;
+      try {
+        await navigator.clipboard.writeText(noteText);
+        copyNote.textContent = "Copied";
+      } catch (_err) {
+        copyNote.textContent = "Copy notes for a clinician";
+      }
+    });
     document.getElementById("forget").addEventListener("click", async () => {
       await fetch("/memory/delete", { method: "POST", headers: authHeaders() });
       transcript.replaceChildren();
+      showNote("");
       input.focus();
     });
     document.getElementById("signout").addEventListener("click", showGate);
@@ -285,6 +325,40 @@
       await openSession();
     }
 
+    function renderCrisis(data) {
+      const line = document.getElementById("crisis-line");
+      line.replaceChildren();
+      line.append(document.createTextNode((data.summary || "") + " "));
+      (data.crisis || []).forEach((item) => {
+        if (!item.url) return;
+        const link = document.createElement("a");
+        link.href = item.url;
+        link.rel = "noopener noreferrer";
+        link.target = "_blank";
+        link.textContent = item.name;
+        line.append(link);
+        line.append(document.createTextNode(" "));
+      });
+    }
+
+    async function applyCountry() {
+      const country = document.getElementById("country").value;
+      localStorage.setItem(COUNTRY_KEY, country);
+      const response = await fetch("/resources?country=" + encodeURIComponent(country));
+      if (response.ok) renderCrisis(await response.json());
+      if (token) {
+        await fetch("/country", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ country })
+        });
+      }
+    }
+
+    document.getElementById("country").addEventListener("change", () => applyCountry());
+    const savedCountry = localStorage.getItem(COUNTRY_KEY);
+    if (savedCountry) document.getElementById("country").value = savedCountry;
+    applyCountry();
     if (token) openSession();
   </script>
 </body>

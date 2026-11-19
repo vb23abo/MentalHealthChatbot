@@ -14,19 +14,24 @@ from supportchat.service import handle_turn
 from supportchat.session import Session
 
 
-def run_scenario(scenario: dict) -> tuple[bool, str]:
+def run_scenario(scenario: dict, writer=None) -> tuple[bool, str]:
     session = Session(user_id=scenario["name"][:24].replace(" ", "-"))
+    session.user_turns = scenario.get("user_turns", 0)
     result = None
     for message in scenario["messages"]:
-        result = handle_turn(session, message)
+        result = handle_turn(session, message, writer)
     assert result is not None
     text = result["response"].lower()
     problems: list[str] = []
 
     if "crisis" in scenario and result["crisis"] is not scenario["crisis"]:
         problems.append(f"crisis was {result['crisis']}, expected {scenario['crisis']}")
-    if scenario.get("urgent") and not result["urgent"]:
-        problems.append("expected an urgent reply")
+    if "urgent" in scenario and result["urgent"] is not scenario["urgent"]:
+        problems.append(f"urgent was {result['urgent']}, expected {scenario['urgent']}")
+    if scenario.get("no_resources") and result["resources"]:
+        problems.append("expected no resources")
+    if "visit_note" in scenario and bool(result.get("visit_note")) is not scenario["visit_note"]:
+        problems.append(f"visit note presence was {bool(result.get('visit_note'))}, expected {scenario['visit_note']}")
     for needle in scenario.get("contains", []):
         if needle.lower() not in text:
             problems.append(f"missing {needle!r}")
@@ -44,16 +49,30 @@ def run_scenario(scenario: dict) -> tuple[bool, str]:
     return not problems, "; ".join(problems)
 
 
-def main() -> int:
+class _TemplateModel:
+    """Model stand-in that returns the template. Scenarios stay deterministic."""
+
+    def write(self, message: str, topic: str, template: str) -> str:
+        return template
+
+
+def _report(writer, label: str) -> int:
     failed = 0
+    print(f"\n{label}")
     for scenario in SCENARIOS:
-        ok, detail = run_scenario(scenario)
+        ok, detail = run_scenario(scenario, writer)
         mark = "pass" if ok else "fail"
         print(f"[{mark}] {scenario['name']}")
         if detail:
             failed += 1
             print(f"       {detail}")
-    print(f"\n{len(SCENARIOS) - failed}/{len(SCENARIOS)} scenarios passed")
+    print(f"{len(SCENARIOS) - failed}/{len(SCENARIOS)} scenarios passed ({label})")
+    return failed
+
+
+def main() -> int:
+    failed = _report(None, "model off")
+    failed += _report(_TemplateModel(), "model on")
     return 1 if failed else 0
 
 

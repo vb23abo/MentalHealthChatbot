@@ -15,7 +15,6 @@ from typing import Iterator
 from uuid import uuid4
 
 
-MAX_USER_TURNS = 40
 MAX_SESSIONS = 500
 MAX_MESSAGE_CHARS = 2000
 _USER_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -35,6 +34,9 @@ class Session:
     last_checkin: dict | None = None
     last_topic: str | None = None
     topic_turns: int = 0
+    user_lines: list[str] = field(default_factory=list)
+    visit_note: str | None = None
+    country: str = "US"
 
     def clear_checkin(self) -> None:
         self.checkin_step = None

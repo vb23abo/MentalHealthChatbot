@@ -66,14 +66,16 @@ REPLIES: dict[str, tuple[str, ...]] = {
         "That sounds heavy. You don't have to justify feeling this way. "
         "If it helps, name one thing that would make the next hour a little easier, and do only that. "
         "If this has been most days for a couple of weeks, a doctor or counselor can help you sort out next steps.",
-        "Low mood can make everything look flat. I can't tell you what condition this is. What has been the hardest part of today?",
+        "Low mood can make everything look flat. I can't tell you what condition this is. "
+        "Name one thing that would make the next hour a little easier, and do only that.",
     ),
     "worry": (
         "Worry can take over the body as well as the thoughts. "
         "If you want a short reset: breathe in for four counts, hold for four, breathe out for six, and repeat that four times. "
         "If worry is constant or you're losing sleep over it, a clinician is the right person to assess it.",
         "It makes sense that your mind is trying to get ahead of this. "
-        "Pick one worry you can act on today and one you are only rehearsing. We can talk through the one you can act on.",
+        "Pick one worry you can act on today and one you are only rehearsing. We can talk through the one you can act on. "
+        "For a short reset, breathe out for six counts.",
     ),
     "panic": (
         "If this feels like a panic attack, it often peaks and then eases. "
@@ -84,7 +86,7 @@ REPLIES: dict[str, tuple[str, ...]] = {
         "Sleep and mood pull on each other. A steadier cue is a fixed wake-up time, and keeping the bed for sleep rather than for worrying. "
         "If sleep has been badly off for a while, tell a doctor. Several medical reasons can look like insomnia.",
         "If this has already gone on for weeks, tell a doctor when it started and how the days feel. "
-        "A fixed time to get up still matters more than trying to force sleep tonight.",
+        "A fixed wake-up time still matters more than trying to force sleep tonight.",
     ),
     "lonely": (
         "Feeling alone with this is painful. If one person usually feels safe, a short message to them today can matter. "
@@ -130,7 +132,8 @@ SLEEP_AND_WORRY = (
 
 SADNESS_AND_WORRY = (
     "Low mood and worry together are a lot to carry, and I won't put a disorder name on that. "
-    "What is taking up more of today, the worry or the heaviness?"
+    "What is taking up more of today, the worry or the heaviness? "
+    "A short reset is to breathe out for six counts."
 )
 
 
@@ -150,6 +153,27 @@ def detect_intent(message: str) -> str:
         if name in matched:
             return name
     return "default"
+
+
+_ACK = re.compile(r"^(?:yes|yeah|yep|ok|okay|sure)[.!]?$")
+
+
+def spoken_snippet(message: str) -> str | None:
+    """A short piece of the person's own words, for the reply to echo."""
+    text = " ".join(message.strip().split())
+    if not text or _ACK.match(text.lower()):
+        return None
+    snippet = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+    if len(snippet) > 90:
+        snippet = snippet[:87].rstrip() + "..."
+    return snippet
+
+
+def reflect(message: str, body: str) -> str:
+    snippet = spoken_snippet(message)
+    if not snippet:
+        return body
+    return f'You mentioned "{snippet}".\n\n{body}'
 
 
 def compound_reply(matched: list[str]) -> str | None:

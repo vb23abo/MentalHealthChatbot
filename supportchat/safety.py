@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from supportchat.helplines import crisis_resources, crisis_sentence, normalize_country
+
 
 def normalize(text: str) -> str:
     return text.lower().replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
@@ -36,6 +38,13 @@ _SELF_HARM = _compile(
         r"\b(?:hurt|hurting|harm|harming) myself\b",
         r"\bcut(?:ting)? myself\b",
         r"\bunalive myself\b",
+        r"\bi don'?t think i(?:'ll| will) be here tomorrow\b",
+        r"\bi (?:might|may) not make it through the night\b",
+        r"\bi(?:'m| am) thinking of ending it all\b",
+        r"\bi want to end it all\b",
+        r"\bi don'?t see a way out\b(?!\s+of\b)",
+        r"\bbetter if i (?:wasn'?t|was not|weren'?t|were not) (?:around|here)\b(?!\s+[a-z])",
+        r"\bi wish i wouldn'?t wake up\b(?!\s+(?:so|this|early|late|at|before|after)\b)",
     ]
 )
 
@@ -43,6 +52,7 @@ _VIOLENCE = _compile(
     [
         r"\b(?:kill|hurt|harm) (?:him|her|them|someone)\b",
         r"\bwant to (?:kill|hurt|harm) (?:him|her|them|someone|people)\b",
+        r"\bfeel like hurting (?:someone|him|her|them|people)\b(?!'s)",
     ]
 )
 
@@ -53,6 +63,8 @@ _MEDICAL = _compile(
         r"\bcan'?t breathe\b",
         r"\bcannot breathe\b",
         r"\btrouble breathing\b",
+        r"\bmy chest hurts\b",
+        r"\b(?:can'?t|cannot) catch my breath\b(?!\s+after\b)",
     ]
 )
 
@@ -67,6 +79,7 @@ _ABUSE = _compile(
         r"\bsexually assaulted\b",
         r"\bafraid to go home\b",
         r"\bdon'?t feel safe at home\b",
+        r"\bscared of my (?:boyfriend|girlfriend|husband|wife|partner|dad|mom|father|mother)\b(?!'s)(?!\s+\w)",
     ]
 )
 
@@ -74,23 +87,22 @@ _NEGATED = re.compile(
     r"(?:don't|do not|never|not going to|won't|will not)\b[^.]{0,40}$"
 )
 
-CRISIS_RESOURCES = (
-    {
-        "name": "988 Suicide & Crisis Lifeline (US)",
-        "contact": "Call or text 988",
-        "url": "https://988lifeline.org",
-    },
-    {
-        "name": "International Association for Suicide Prevention",
-        "contact": "Local helpline directory",
-        "url": "https://www.iasp.info/suicidalthoughts/",
-    },
-    {
-        "name": "Emergency services",
-        "contact": "Your local emergency number",
-        "url": None,
-    },
+# Wording the phrase list above does not cover. The second check may add the
+# crisis line from these. It is never used to remove a phrase-list match.
+_SECOND_RAISE = _compile(
+    [
+        r"\bi have nothing left to live for\b(?!\s+in\b)",
+    ]
 )
+
+# A shorter stem, with the ordinary continuations left out. Unsure fails closed.
+_SECOND_UNSURE = _compile(
+    [
+        r"\bnothing left to live\b(?!\s+(?:for\s+in|on)\b)",
+    ]
+)
+
+CRISIS_RESOURCES = crisis_resources("US")
 
 ABUSE_RESOURCES = (
     {
@@ -163,10 +175,29 @@ def _dedupe(items: list[dict]) -> tuple[dict, ...]:
     return tuple(unique)
 
 
+def _self_harm_message(country: str) -> str:
+    return (
+        "I'm glad you said this. I can't keep you safe in an emergency, and I'm not a crisis counselor. "
+        "If you might act on thoughts of suicide or of hurting yourself, contact local emergency services now. "
+        f"{crisis_sentence(country)} "
+        "If you can, tell someone near you what is going on."
+    )
+
+
+def _abuse_message(country: str) -> str:
+    if normalize_country(country) != "US":
+        return (
+            "You deserve to be safe. If you are being hurt or threatened, contact local emergency services now. "
+            "A local helpline is in the IASP directory at https://www.iasp.info/suicidalthoughts/."
+        )
+    return _LEAD["abuse"]
+
+
 @dataclass(frozen=True)
 class SafetyResult:
     level: str
     resources: tuple[dict, ...]
+    text: str | None = None
 
     @property
     def urgent(self) -> bool:
@@ -174,10 +205,12 @@ class SafetyResult:
 
     @property
     def message(self) -> str | None:
+        if self.text is not None:
+            return self.text
         return _LEAD.get(self.level)
 
 
-def assess(text: str) -> SafetyResult:
+def assess(text: str, country: str = "US") -> SafetyResult:
     """Return the highest-priority safety match and every relevant resource."""
     normalized = normalize(text)
     self_harm = _has_match(_SELF_HARM, normalized)
@@ -186,9 +219,11 @@ def assess(text: str) -> SafetyResult:
     abuse = _has_match(_ABUSE, normalized)
 
     resources: list[dict] = []
+    message = None
     if self_harm:
         level = "self_harm"
-        resources.extend(CRISIS_RESOURCES)
+        resources.extend(crisis_resources(country))
+        message = _self_harm_message(country)
     elif violence:
         level = "violence"
         resources.extend(MEDICAL_RESOURCES)
@@ -197,12 +232,37 @@ def assess(text: str) -> SafetyResult:
         resources.extend(MEDICAL_RESOURCES)
     elif abuse:
         level = "abuse"
-        resources.extend(ABUSE_RESOURCES)
+        if normalize_country(country) == "US":
+            resources.extend(ABUSE_RESOURCES)
         resources.extend(MEDICAL_RESOURCES)
+        message = _abuse_message(country)
     else:
         level = "none"
 
-    if (self_harm or violence) and abuse:
+    if (self_harm or violence) and abuse and normalize_country(country) == "US":
         resources.extend(ABUSE_RESOURCES)
 
-    return SafetyResult(level=level, resources=_dedupe(resources))
+    return SafetyResult(level=level, resources=_dedupe(resources), text=message)
+
+
+def second_look(text: str) -> str:
+    """A local check for wording the phrase list missed.
+
+    Returns "raise", "unsure", or "clear". "clear" means this check found
+    nothing to add. It does not mean a phrase-list match should be dropped.
+    """
+    normalized = normalize(text)
+    if _has_match(_SECOND_RAISE, normalized):
+        return "raise"
+    if _has_match(_SECOND_UNSURE, normalized):
+        return "unsure"
+    return "clear"
+
+
+def escalate(country: str = "US") -> SafetyResult:
+    """The crisis result the second check is allowed to add."""
+    return SafetyResult(
+        level="self_harm",
+        resources=tuple(crisis_resources(country)),
+        text=_self_harm_message(country),
+    )
