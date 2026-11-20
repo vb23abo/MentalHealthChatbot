@@ -281,4 +281,18 @@ SCENARIOS = [
         "contains": ["budget", "manager", "one small thing"],
         "absent": ["you have"],
     },
+    {
+        "name": "that's all after worse stays with the concern",
+        "messages": ["The meeting with my manager was awful", "It's worse", "that's all"],
+        "crisis": False,
+        "contains": ["stay with this"],
+        "absent": ["take care", "one small thing"],
+    },
+    {
+        "name": "that's all with nothing waiting is goodbye",
+        "messages": ["that's all"],
+        "crisis": False,
+        "contains": ["take care"],
+        "absent": ["one small thing", "you mentioned"],
+    },
 ]

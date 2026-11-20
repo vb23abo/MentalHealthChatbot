@@ -43,7 +43,7 @@ An identifier in the left column is stable. Later build notes can cite it. “Mu
 
 | ID | Statement |
 | --- | --- |
-| U-1 | Understanding labels an ordinary message as a concern, a greeting, a thin answer, an easing, a closing, a signpost, or unclear. A check-in and a boundary are decided before Understanding, so they are not stored as concerns. |
+| U-1 | Understanding labels an ordinary message as a concern, a greeting, a thin answer, an easing, a closing, a signpost, or unclear. A check-in and a boundary are decided before Understanding, so they are not stored as concerns. While a something-else question is waiting, the whole message “no”, “that's all”, or “nothing else” is the stay answer. When nothing is waiting, that same whole message is goodbye and is not stored as a concern. |
 | U-2 | A concern label is a short phrase taken from the person’s own words. It is not chosen from a list of life domains. It is never a disorder name. |
 | U-3 | Understanding compares the new message with each stored phrase and that concern’s three snippets, not with the transcript and not with a topic list. A clear continuation stays. A clearly different matter switches. Anything in between gets one short question. A bare greeting asks how they are today. The latest open concern is offered only if the answer names no matter. |
 | U-4 | A request for a diagnosis, a medicine, or a therapy is a boundary request. |
@@ -54,9 +54,9 @@ An identifier in the left column is stable. Later build notes can cite it. “Mu
 | U-15 | The system does not treat an earlier concern as the cause of today’s because it came first. When the person connects two concerns, the reply uses the primary card and may acknowledge the newest snippet of the linked concern. It does not add the linked concern’s practical step. |
 | U-14 | The chat does not contact the person while they are away. A greeting, and opening the page when a concern is still open, asks “How are you today?” and does not send a card. If the answer is only fine or okay, Reply then asks about the latest open concern. If the answer names a matter, that matter is the reply. If every concern is eased or closed, a thin answer gets a short invitation and no settled concern. |
 | U-16 | A concern becomes eased or closed only when the person says so about that concern. Improvement in their own words counts: better, improved, easier, going well, or showing results, when the sentence refers to that stored concern. Time, a topic change, a low check-in, and a bare “I’m fine” do not settle it. The reply acknowledges the person’s words and does not give a plan. Snippets stay until the person deletes the chats. Talking about it again sets it back to open. |
-| U-9 | If the writer drops the practical step, adds a disorder as the person’s condition, names a medicine, or names a therapy technique, Reply sends the card text instead. |
+| U-9 | Reply sends the card text when a draft drops the practical step, names a condition, a medicine, or a therapy, or when that check is unsure. A blocklist is not treated as complete. |
 | U-10 | If the writer is off, errors, or returns a non-text result, Reply sends the card text. |
-| U-11 | The writer, when used, is reached only at a localhost address. |
+| U-11 | The writer, when used, is reached only by http or https on 127.0.0.1 or localhost. A redirect is refused. |
 | U-12 | A boundary request is answered with the boundary. It has no source line and no writer call. |
 | U-13 | Goodbye names the country’s crisis line in the closing line when a line exists. |
 
@@ -78,13 +78,13 @@ An identifier in the left column is stable. Later build notes can cite it. “Mu
 | M-1 | Memory stores the account, the country, the turns, the concern threads, and the check-in progress. |
 | M-2 | Memory has no field for a condition, a medicine, or a therapy. |
 | M-3 | Passwords are stored only as a hash. Sign-in tokens are stored only as a hash. |
-| M-4 | A token stops working seven days after it was created, and is removed when it is presented after that. |
-| M-5 | Five wrong passwords from one address within fifteen minutes pause sign-in for the rest of that window, including a later correct password. A password that is rejected for being too short is not counted. |
-| M-6 | A successful sign-in clears that address’s failure count. |
+| M-4 | A token stops working seven days after it was created, and is removed when it is presented after that. Sign-out deletes the token that was sent. A new sign-in deletes that account’s older tokens. |
+| M-5 | Five wrong passwords for one username within fifteen minutes pause sign-in for that username for the rest of the window, including a later correct password. The count is stored so a restart keeps the window. A password rejected for length is not counted. Register has a separate pause of the same size for one address. A duplicate username counts toward it. A username or password rejected for shape does not. |
+| M-6 | A successful sign-in clears that username’s failure count. |
 | M-7 | Deleting chats removes turns and chat fields on the session. The account and the country remain. |
 | M-8 | Turns and concern threads stay until the person deletes the chats. The page opens on the latest 30 turns and can load earlier ones. Age does not delete them. |
-| M-9 | The access log records the method, the path, and the status. It does not record message text. |
-| M-10 | A message over 2,000 characters is refused. The entry box states the same limit. |
+| M-9 | The access log records the method, the path, and the status. It does not record message text or exception text. An unexpected error is logged as its type and path. |
+| M-10 | A message over 2,000 characters is refused, and so is a message with no visible characters. The request body is limited to 8 KB. A password must be 8 to 128 characters. The entry box states the 2,000-character limit. |
 | M-11 | Safety reads the raw message and the country. It does not read snippets or the transcript. |
 | M-12 | Each concern keeps at most the latest three snippets of the person’s own words, each at most 200 characters. Those snippets stay with the concern, including when that concern is older than the 30 turns on screen. Returning to it restores them. Switching concern sets the other thread aside. |
 | M-13 | On a continued concern, the reply opens with one acknowledgement that uses the newest earlier snippet, then the practical step. A short follow-up also asks whether something else is going on. The acknowledgement is present with the writer off. |
@@ -140,12 +140,15 @@ These are the tests. A row may quote a particular life matter so the test can be
 | E-28 | “Yes” after the something-else question | A question asking what else is going on | The next-hour step |
 | E-29 | A later detail uses a word that is only in a snippet, not in the short label | That same concern, its earlier words, and the next-hour step | A new thread |
 | E-30 | A concern was eased, nothing else is open, then “Hi” | “How are you today?” | That concern’s name, or a card |
+| E-31 | “It’s worse”, then the whole message “that's all” | An agreement to stay with the concern | A goodbye, or the next-hour step |
+| E-32 | “That's all” when nothing is waiting | Goodbye | A new concern, or the next-hour step |
 
 ## Non-functional
 
 | ID | Statement |
 | --- | --- |
-| N-1 | The first build runs on one computer. The browser, the app, the database file, and the optional writer are all on that computer. |
+| N-1 | The first build runs on one computer. The browser, the app, the database file, and the optional writer are all on that computer. The database file is readable only by this user. |
+| N-5 | The page sends a frame denial on every response. Delete asks once, then clears the chats and keeps the account. |
 | N-2 | With the writer off, a reply does not depend on a network call. |
 | N-3 | Agent results are plain data the Coordinator can log in tests without storing message text in the access log. |
 | N-4 | Secrets are not written into the design, the page, or the project files. |

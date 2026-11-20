@@ -7,7 +7,8 @@ Run from the project root:
 
 from __future__ import annotations
 
-import time
+import logging
+import threading
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -15,7 +16,7 @@ from werkzeug.exceptions import HTTPException
 
 from supportchat.agents.memory_agent import MemoryAgent
 from supportchat.helplines import country_choices, crisis_resources, normalize_country, page_summary
-from supportchat.memory import AuthError, MemoryStore
+from supportchat.memory import AuthError, LoginPaused, MemoryStore
 from supportchat.model import writer_from_environment
 from supportchat.safety import ABUSE_RESOURCES, MEDICAL_RESOURCES
 from supportchat.service import BOUNDARY, handle_turn
@@ -26,6 +27,8 @@ _DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "support.sqlite"
 BIND_HOST = "127.0.0.1"
 LOGIN_ATTEMPT_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 15 * 60
+MAX_BODY_BYTES = 8 * 1024
+_BEFORE_DIGITS = 18
 
 
 def create_app(
@@ -36,23 +39,26 @@ def create_app(
     login_window_seconds: int = LOGIN_WINDOW_SECONDS,
 ) -> Flask:
     app = Flask(__name__)
-    memory = MemoryAgent(MemoryStore(db_path or str(_DEFAULT_DB), recent_limit=recent_limit))
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
+    memory = MemoryAgent(
+        MemoryStore(
+            db_path or str(_DEFAULT_DB),
+            recent_limit=recent_limit,
+            login_limit=login_limit,
+            login_window_seconds=login_window_seconds,
+        )
+    )
     app.extensions["memory"] = memory
     app.extensions["writer"] = writer
-    login_failures: dict[str, list[float]] = {}
-    app.extensions["login_failures"] = login_failures
+    account_locks: dict[int, threading.Lock] = {}
+    account_guard = threading.Lock()
 
     def client_address() -> str:
         return request.remote_addr or "unknown"
 
-    def login_blocked(address: str) -> bool:
-        now = time.monotonic()
-        recent = [stamp for stamp in login_failures.get(address, []) if now - stamp < login_window_seconds]
-        login_failures[address] = recent
-        return len(recent) >= login_limit
-
-    def note_login_failure(address: str) -> None:
-        login_failures.setdefault(address, []).append(time.monotonic())
+    def lock_for(user_id: int) -> threading.Lock:
+        with account_guard:
+            return account_locks.setdefault(user_id, threading.Lock())
 
     def current_user_id() -> int | None:
         header = request.headers.get("Authorization", "")
@@ -94,18 +100,27 @@ def create_app(
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify(error="Send a country."), 400
-        code = memory.set_country(user_id, str(payload.get("country", "")))
+        chosen = payload.get("country", "")
+        if not isinstance(chosen, str):
+            return jsonify(error="Send a country."), 400
+        code = memory.set_country(user_id, chosen)
         return jsonify(country=code, summary=page_summary(code))
 
     @app.post("/register")
     def register():
+        address = client_address()
+        if memory.register_blocked(address):
+            return jsonify(error="Too many account attempts. Wait and try again."), 429
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify(error="Send a username and password."), 400
         try:
             token = memory.register(payload.get("username", ""), payload.get("password", ""))
         except AuthError as exc:
+            if "taken" in str(exc):
+                memory.note_register_failure(address)
             return jsonify(error=str(exc)), 400
+        memory.note_register_failure(address)
         return jsonify(token=token), 201
 
     @app.post("/login")
@@ -113,21 +128,30 @@ def create_app(
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify(error="Send a username and password."), 400
-        address = client_address()
-        if login_blocked(address):
-            return jsonify(error="Too many sign-in attempts. Wait and try again."), 429
         try:
             token = memory.login(payload.get("username", ""), payload.get("password", ""))
+        except LoginPaused as exc:
+            return jsonify(error=str(exc)), 429
         except AuthError as exc:
-            if "wrong" in str(exc):
-                note_login_failure(address)
-                return jsonify(error=str(exc)), 401
-            return jsonify(error=str(exc)), 400
-        login_failures.pop(address, None)
+            status = 401 if "wrong" in str(exc) else 400
+            return jsonify(error=str(exc)), status
         return jsonify(token=token)
+
+    @app.post("/logout")
+    def logout():
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return jsonify(error="Sign in is required."), 401
+        token = header.removeprefix("Bearer ").strip()
+        if memory.user_id_for_token(token) is None:
+            return jsonify(error="Sign in is required."), 401
+        memory.revoke_token(token)
+        return jsonify(signed_out=True)
 
     @app.after_request
     def access_log(response):
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         app.logger.info("%s %s %s", request.method, request.path, response.status_code)
         return response
 
@@ -136,8 +160,12 @@ def create_app(
         user_id, error = require_user()
         if error:
             return error
-        raw_before = request.args.get("before", "")
-        before_id = int(raw_before) if raw_before.isdigit() else None
+        raw_before = request.args.get("before")
+        before_id = None
+        if raw_before not in (None, ""):
+            if not raw_before.isdigit() or raw_before.startswith("0") or len(raw_before) > _BEFORE_DIGITS:
+                return jsonify(error="Send a valid earlier-message id."), 400
+            before_id = int(raw_before)
         snapshot = memory.snapshot(user_id, before_id)
         snapshot["disclaimer"] = BOUNDARY
         return jsonify(snapshot)
@@ -164,12 +192,18 @@ def create_app(
         message = message.strip()
         if len(message) > MAX_MESSAGE_CHARS:
             return jsonify(error=f"Message is too long. The limit is {MAX_MESSAGE_CHARS} characters."), 400
-        session = memory.load_session(user_id)
-        chosen = payload.get("country")
-        if isinstance(chosen, str) and chosen.strip():
-            session.country = memory.set_country(user_id, chosen)
-        result = handle_turn(session, message, writer)
-        memory.save_exchange(user_id, session, message, result["response"], result["safety"])
+        if not any(not char.isspace() and char.isprintable() for char in message):
+            return jsonify(error="A message is required."), 400
+        if "country" in payload and payload.get("country") not in (None, ""):
+            if not isinstance(payload.get("country"), str):
+                return jsonify(error="Send a country."), 400
+        with lock_for(user_id):
+            session = memory.load_session(user_id)
+            chosen = payload.get("country")
+            if isinstance(chosen, str) and chosen.strip():
+                session.country = memory.set_country(user_id, chosen)
+            result = handle_turn(session, message, writer)
+            memory.save_exchange(user_id, session, message, result["response"], result["safety"])
         return jsonify(result)
 
     @app.errorhandler(HTTPException)
@@ -177,13 +211,15 @@ def create_app(
         return jsonify(error=exc.description), exc.code
 
     @app.errorhandler(Exception)
-    def unexpected(_exc: Exception):
+    def unexpected(exc: Exception):
+        app.logger.error("%s %s %s", request.method, request.path, type(exc).__name__)
         return jsonify(error="Something went wrong. Please try again."), 500
 
     return app
 
 
 def main() -> None:
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     create_app(writer=writer_from_environment()).run(host=BIND_HOST, port=5050, debug=False)
 
 

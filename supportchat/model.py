@@ -13,17 +13,19 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
+_ALLOWED = re.compile(r"\bnot a diagnosis\b", re.IGNORECASE)
 _REJECT = re.compile(
-    r"\byou have (?:depression|anxiety|bipolar|ptsd|ocd|adhd|insomnia)\b"
-    r"|\byou(?:'re| are) (?:depressed|bipolar)\b"
-    r"|\bi diagnose\b"
-    r"|\bdiagnos(?:is|e) is\b"
+    r"\b(?:depress(?:ed|ion)|anxiety|anxious|bipolar|ptsd|ocd|adhd|insomnia|disorder)\b"
+    r"|\bdiagnos(?:is|e|ing)\b"
     r"|\bprescrib(?:e|ing|ed)\b"
-    r"|\bantidepressant\b"
+    r"|\b(?:antidepressant|medication|medicine)\b"
     r"|\b(?:ssri|sertraline|fluoxetine|zoloft|prozac)\b"
     r"|\b(?:emdr|cbt|erp)\b"
+    r"|\bcognitive behavio(?:u)?ral therapy\b"
+    r"|\bexposure and response prevention\b"
+    r"|\beye movement desensit\w*"
     r"|\btreatment plan\b"
-    r"|\bi recommend (?:medication|a diagnosis|cbt)\b",
+    r"|\btherapy\b",
     re.IGNORECASE,
 )
 
@@ -55,7 +57,15 @@ def usable_support_text(text: str) -> bool:
     cleaned = text.strip()
     if not cleaned or len(cleaned) > 1200:
         return False
-    return _REJECT.search(cleaned) is None
+    screened = _ALLOWED.sub(" ", cleaned)
+    return _REJECT.search(screened) is None
+
+
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """A local model must not send the person's message on to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
 
 
 class LocalModel:
@@ -63,11 +73,12 @@ class LocalModel:
 
     def __init__(self, model: str, host: str = "http://127.0.0.1:11434", timeout: float = 15) -> None:
         parsed = urlparse(host)
-        if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost"}:
             raise ValueError("The support model must run on this computer.")
         self.model = model
         self.host = host.rstrip("/")
         self.timeout = timeout
+        self._opener = urllib.request.build_opener(_RefuseRedirect)
 
     def write(self, message: str, topic: str, template: str) -> str | None:
         del topic  # The card text already names the concern. History is not sent.
@@ -87,7 +98,7 @@ class LocalModel:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=self.timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
             return None

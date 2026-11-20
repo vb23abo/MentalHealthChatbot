@@ -238,21 +238,21 @@ flowchart TD
 
 ## 9. Activity: sign-in
 
-Wrong passwords are counted in process memory for that address. They are not written to the session store. A restart clears the count. A too-short password is refused and not counted.
+Wrong passwords are counted per username and stored with the account data, so a restart keeps the fifteen-minute window. A password rejected for length is refused and not counted. Register has its own count per address. A new sign-in deletes that account’s older tokens.
 
 ```mermaid
 flowchart TD
-    attempt[Sign-in attempt] --> locked{Address inside the 15 minute pause?}
-    locked -->|yes| wait[Refuse, including a correct password]
-    locked -->|no| shape{Password long enough?}
+    attempt[Sign-in attempt] --> shape{Password within 8 to 128 characters?}
     shape -->|no| short[Refuse and do not count it]
-    shape -->|yes| match{Hash matches?}
-    match -->|no| count[Add one failure]
+    shape -->|yes| locked{Username inside the 15 minute pause?}
+    locked -->|yes| wait[Refuse, including a correct password]
+    locked -->|no| match{Hash matches?}
+    match -->|no| count[Add one failure for this username]
     count --> limit{Five failures in the window?}
-    limit -->|yes| pause[Pause this address]
+    limit -->|yes| pause[Pause this username]
     limit -->|no| wrong[Refuse]
-    match -->|yes| clear[Clear the failure count]
-    clear --> token[Issue a token hash, expiry seven days]
+    match -->|yes| clear[Clear that username's failure count]
+    clear --> token[Delete older tokens and issue one, expiry seven days]
 ```
 
 ## 10. Entity relationship
@@ -309,7 +309,7 @@ erDiagram
 | Entity | Meaning | Removed when |
 | --- | --- | --- |
 | Account | The person, their password hash, and their country | The person deletes the account. Deleting chats does not remove it. |
-| Token | The hash of a sign-in token. The raw token exists only on the page. | It is presented after seven days, or the person signs out. |
+| Token | The hash of a sign-in token. The raw token exists only on the page. | It is presented after seven days, the person signs out, or a newer sign-in replaces it. |
 | Session | Latest open phrase, the waiting flag, check-in progress, person-turn count, optional visit note | Deleting chats clears these fields and leaves the row. |
 | Concern | One phrase from the person’s words, a status of open, eased, or closed, and at most three snippets | Deleting chats. Age, easing, and closing do not remove it. |
 | Turn | One line from the person or from the chat | Deleting chats. Age does not remove it. |

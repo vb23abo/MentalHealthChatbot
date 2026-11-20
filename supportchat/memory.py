@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -29,6 +30,10 @@ _USERNAME = re.compile(r"^[A-Za-z0-9_]{3,32}$")
 
 class AuthError(ValueError):
     """The username or password cannot be accepted."""
+
+
+class LoginPaused(AuthError):
+    """Sign-in for this username is paused."""
 
 
 def resume_line(topic: str | None, safety: str, country: str = "US") -> str | None:
@@ -60,6 +65,8 @@ def _clean_username(username: str) -> str:
 def _check_password(password: str) -> None:
     if not isinstance(password, str) or len(password) < 8:
         raise AuthError("Password must be at least 8 characters.")
+    if len(password) > 128:
+        raise AuthError("Password must be at most 128 characters.")
 
 
 class MemoryStore:
@@ -68,13 +75,21 @@ class MemoryStore:
         path: str,
         recent_limit: int = RECENT_LIMIT,
         token_days: int = TOKEN_DAYS,
+        login_limit: int = 5,
+        login_window_seconds: int = 15 * 60,
     ) -> None:
         self.recent_limit = recent_limit
         self.token_days = token_days
+        self.login_limit = login_limit
+        self.login_window_seconds = login_window_seconds
         if path != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            parent = Path(path).parent
+            parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(parent, 0o700)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
+        if path != ":memory:":
+            os.chmod(path, 0o600)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(
@@ -110,6 +125,11 @@ class MemoryStore:
                 safety TEXT NOT NULL DEFAULT 'none',
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS auth_failures (
+                kind TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                failed_at TEXT NOT NULL
+            );
             """
         )
         self._ensure_visit_note()
@@ -143,15 +163,40 @@ class MemoryStore:
         username = _clean_username(username)
         _check_password(password)
         with self._lock:
+            if self._failure_count("login", username) >= self.login_limit:
+                self._conn.commit()
+                raise LoginPaused("Too many sign-in attempts. Wait and try again.")
             row = self._conn.execute(
                 "SELECT id, password_hash FROM users WHERE username = ?",
                 (username,),
             ).fetchone()
             if row is None or not check_password_hash(row["password_hash"], password):
+                self._note_failure("login", username)
+                self._conn.commit()
                 raise AuthError("Username or password is wrong.")
+            self._clear_failures("login", username)
             token = self._issue_token(int(row["id"]), _now())
             self._conn.commit()
             return token
+
+    def register_blocked(self, address: str) -> bool:
+        with self._lock:
+            blocked = self._failure_count("register", address) >= self.login_limit
+            self._conn.commit()
+            return blocked
+
+    def note_register_failure(self, address: str) -> None:
+        with self._lock:
+            self._note_failure("register", address)
+            self._conn.commit()
+
+    def revoke_token(self, token: str) -> None:
+        if not token:
+            return
+        digest = _hash_token(token)
+        with self._lock:
+            self._conn.execute("DELETE FROM tokens WHERE token_hash = ?", (digest,))
+            self._conn.commit()
 
     def user_id_for_token(self, token: str) -> int | None:
         if not token:
@@ -340,12 +385,38 @@ class MemoryStore:
         return code
 
     def _issue_token(self, user_id: int, now: str) -> str:
+        self._conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
         token = secrets.token_urlsafe(32)
         self._conn.execute(
             "INSERT INTO tokens (token_hash, user_id, created_at) VALUES (?, ?, ?)",
             (_hash_token(token), user_id, now),
         )
         return token
+
+    def _failure_count(self, kind: str, subject: str) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.login_window_seconds)).isoformat()
+        self._conn.execute(
+            "DELETE FROM auth_failures WHERE kind = ? AND subject = ? AND failed_at < ?",
+            (kind, subject, cutoff),
+        )
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM auth_failures WHERE kind = ? AND subject = ?",
+            (kind, subject),
+        ).fetchone()
+        return int(row["n"])
+
+    def _note_failure(self, kind: str, subject: str) -> None:
+        self._failure_count(kind, subject)
+        self._conn.execute(
+            "INSERT INTO auth_failures (kind, subject, failed_at) VALUES (?, ?, ?)",
+            (kind, subject, _now()),
+        )
+
+    def _clear_failures(self, kind: str, subject: str) -> None:
+        self._conn.execute(
+            "DELETE FROM auth_failures WHERE kind = ? AND subject = ?",
+            (kind, subject),
+        )
 
     def _profile(self, user_id: int) -> sqlite3.Row:
         row = self._conn.execute("SELECT * FROM profiles WHERE user_id = ?", (user_id,)).fetchone()

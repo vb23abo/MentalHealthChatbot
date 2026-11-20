@@ -327,6 +327,39 @@ class ModelTests(unittest.TestCase):
     def test_remote_model_host_is_refused(self):
         with self.assertRaises(ValueError):
             LocalModel("llama3.2", host="https://example.com")
+        with self.assertRaises(ValueError):
+            LocalModel("llama3.2", host="file://localhost/tmp")
+        LocalModel("llama3.2", host="http://127.0.0.1:11434")
+        self.assertFalse(
+            usable_support_text(
+                "One small thing that would make the next hour a little easier. "
+                "You have a severe depression."
+            )
+        )
+        self.assertFalse(
+            usable_support_text(
+                "One small thing that would make the next hour a little easier. "
+                "Try cognitive behavioral therapy."
+            )
+        )
+        self.assertTrue(
+            usable_support_text(
+                "One small thing that would make the next hour a little easier. "
+                "This is support, not a diagnosis."
+            )
+        )
+
+    def test_thats_all_stays_only_while_the_question_is_waiting(self):
+        session = Session(user_id="all")
+        handle_turn(session, "The meeting with my manager was awful", None)
+        handle_turn(session, "It's worse", None)
+        stayed = handle_turn(session, "that's all", None)
+        self.assertIn("stay with this", stayed["response"].lower())
+        self.assertEqual(len(session.concerns), 1)
+        fresh = Session(user_id="all-2")
+        bye = handle_turn(fresh, "that's all", None)
+        self.assertIn("Take care", bye["response"])
+        self.assertEqual(fresh.concerns, [])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ disorder are rejected and the card is sent.
 
 from __future__ import annotations
 
+import re
+
 from supportchat.agents.turn import checkin_state, envelope
 from supportchat.concerns import Plan, Understanding, accept_draft, support_text
 from supportchat.dialogue import REPLIES, detect_intent
@@ -16,15 +18,29 @@ from supportchat.safety import SafetyResult
 from supportchat.session import Session
 
 _ELSE = "Is there something else as well?"
+_WHOLE_END = re.compile(
+    r"^(?:no|nope|that's all|thats all|nothing else)[.!]?$",
+    re.IGNORECASE,
+)
 
 
 class SupportAgent:
     def boundary(self, session: Session, message: str, safety: SafetyResult) -> dict | None:
+        if _WHOLE_END.match(message.strip()):
+            if session.pending == "else":
+                return None
+            return self._goodbye(session, safety)
         intent = detect_intent(message)
         if intent not in {"diagnosis", "treatment", "thanks", "goodbye", "leave"}:
             return None
+        if intent == "goodbye":
+            return self._goodbye(session, safety)
         template = REPLIES[intent][(session.user_turns - 1) % len(REPLIES[intent])]
-        if intent == "goodbye" and session.country != "US":
+        return envelope(session, template, safety, checkin_state(session, "inactive"))
+
+    def _goodbye(self, session: Session, safety: SafetyResult) -> dict:
+        template = REPLIES["goodbye"][(session.user_turns - 1) % len(REPLIES["goodbye"])]
+        if session.country != "US":
             template = (
                 "Take care. If things get worse, or if you might hurt yourself, contact local emergency services. "
                 + crisis_sentence(session.country)

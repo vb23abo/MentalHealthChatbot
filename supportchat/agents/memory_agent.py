@@ -25,6 +25,15 @@ class MemoryAgent:
     def login(self, username: str, password: str) -> str:
         return self.store.login(username, password)
 
+    def register_blocked(self, address: str) -> bool:
+        return self.store.register_blocked(address)
+
+    def note_register_failure(self, address: str) -> None:
+        self.store.note_register_failure(address)
+
+    def revoke_token(self, token: str) -> None:
+        self.store.revoke_token(token)
+
     def snapshot(self, user_id: int, before_id: int | None = None) -> dict:
         return self.store.snapshot(user_id, before_id)
 

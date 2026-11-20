@@ -2,6 +2,7 @@ import hashlib
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -48,7 +49,10 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Create account", html)
         self.assertIn("Copy notes for a clinician", html)
         self.assertIn('maxlength="2000"', html)
+        self.assertIn("Delete saved chats on this computer?", html)
         self.assertNotIn("Psychotherapy", html)
+        self.assertEqual(page.headers.get("X-Frame-Options"), "DENY")
+        self.assertIn("frame-ancestors 'none'", page.headers.get("Content-Security-Policy", ""))
 
     def test_conversation_requires_sign_in(self):
         response = self.client.post("/conversation", json={"message": "hello"})
@@ -275,6 +279,95 @@ class ApiTests(unittest.TestCase):
             self.assertIn("hello", [turn["text"] for turn in older["turns"]])
         finally:
             client.application.extensions["memory"].close()
+
+    def test_sign_out_and_a_new_sign_in_end_older_tokens(self):
+        headers = self.auth(username="token_user")
+        first = headers["Authorization"].split(" ", 1)[1]
+        signed_out = self.client.post("/logout", headers=headers)
+        self.assertEqual(signed_out.status_code, 200)
+        self.assertEqual(self.client.get("/memory", headers=headers).status_code, 401)
+        again = self.client.post("/login", json={"username": "token_user", "password": "test-pass-1"})
+        second = again.get_json()["token"]
+        third = self.client.post("/login", json={"username": "token_user", "password": "test-pass-1"}).get_json()["token"]
+        self.assertEqual(
+            self.client.get("/memory", headers={"Authorization": "Bearer " + second}).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get("/memory", headers={"Authorization": "Bearer " + third}).status_code,
+            200,
+        )
+        self.assertNotEqual(first, third)
+
+    def test_register_pause_is_separate_from_sign_in(self):
+        limited = create_app(self.db_path, login_limit=2).test_client()
+        try:
+            for name in ("reg_one", "reg_two"):
+                created = limited.post("/register", json={"username": name, "password": "test-pass-1"})
+                self.assertEqual(created.status_code, 201)
+            blocked = limited.post("/register", json={"username": "reg_three", "password": "test-pass-1"})
+            self.assertEqual(blocked.status_code, 429)
+            signed_in = limited.post("/login", json={"username": "reg_one", "password": "test-pass-1"})
+            self.assertEqual(signed_in.status_code, 200)
+        finally:
+            limited.application.extensions["memory"].close()
+
+    def test_bad_before_does_not_change_the_thread(self):
+        headers = self.auth(username="before_user")
+        self.client.post("/conversation", json={"message": "I can't sleep"}, headers=headers)
+        self.client.post("/conversation", json={"message": "It's worse"}, headers=headers)
+        refused = self.client.get("/memory?before=nope", headers=headers)
+        self.assertEqual(refused.status_code, 400)
+        huge = self.client.get("/memory?before=" + ("9" * 30), headers=headers)
+        self.assertEqual(huge.status_code, 400)
+        self.assertNotIn("Traceback", huge.get_data(as_text=True))
+        follow = self.client.post("/conversation", json={"message": "I'm fine"}, headers=headers)
+        self.assertNotIn("last time", follow.get_json()["response"].lower())
+
+    def test_invisible_message_and_bad_country_are_refused(self):
+        headers = self.auth(username="shape_user")
+        blank = self.client.post("/conversation", json={"message": "\x00\x01"}, headers=headers)
+        self.assertEqual(blank.status_code, 400)
+        country = self.client.post("/country", json={"country": 44}, headers=headers)
+        self.assertEqual(country.status_code, 400)
+        long_password = self.client.post(
+            "/register",
+            json={"username": "long_pass", "password": "p" * 129},
+        )
+        self.assertEqual(long_password.status_code, 400)
+        huge = self.client.post(
+            "/register",
+            data=b'{"username":"bulk","password":"' + (b"p" * 9000) + b'"}',
+            content_type="application/json",
+        )
+        self.assertEqual(huge.status_code, 413)
+        self.assertEqual(os.stat(self.db_path).st_mode & 0o777, 0o600)
+
+    def test_overlapping_turns_keep_both_concerns(self):
+        headers = self.auth(username="overlap_user")
+        app = self.client.application
+        barrier = threading.Barrier(2)
+
+        def send(text: str) -> None:
+            client = app.test_client()
+            barrier.wait()
+            client.post("/conversation", json={"message": text}, headers=headers)
+
+        threads = [
+            threading.Thread(target=send, args=("I can't sleep at night because of noise",)),
+            threading.Thread(target=send, args=("My budget meeting is tomorrow and I feel tense",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        store = app.extensions["memory"].store
+        user_id = store._conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            ("overlap_user",),
+        ).fetchone()["id"]
+        session = store.load_session(int(user_id))
+        self.assertEqual(len(session.concerns), 2)
 
 
 if __name__ == "__main__":

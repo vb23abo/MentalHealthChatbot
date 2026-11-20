@@ -11,7 +11,7 @@ import re
 from supportchat.safety import normalize
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("goodbye", re.compile(r"\b(?:goodbye|bye|good night|that's all|thats all)\b")),
+    ("goodbye", re.compile(r"\b(?:goodbye|bye|good night)\b")),
     ("thanks", re.compile(r"\b(?:thank you|thanks)\b")),
     ("checkin", re.compile(r"\b(?:check[- ]?in|screen me|screening|questionnaire)\b")),
     (

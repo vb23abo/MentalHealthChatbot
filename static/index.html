@@ -332,12 +332,20 @@
       }
     });
     document.getElementById("forget").addEventListener("click", async () => {
+      if (!window.confirm("Delete saved chats on this computer? Your account stays.")) {
+        return;
+      }
       await fetch("/memory/delete", { method: "POST", headers: authHeaders() });
       transcript.replaceChildren();
       showNote("");
       input.focus();
     });
-    document.getElementById("signout").addEventListener("click", showGate);
+    document.getElementById("signout").addEventListener("click", async () => {
+      if (token) {
+        await fetch("/logout", { method: "POST", headers: authHeaders() }).catch(() => {});
+      }
+      showGate();
+    });
 
     document.getElementById("account").addEventListener("submit", (event) => {
       event.preventDefault();
