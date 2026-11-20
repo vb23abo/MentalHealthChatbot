@@ -98,8 +98,6 @@ class CheckInAgent:
             return None
         session.checkin_step = 0
         session.checkin_answers = []
-        session.last_topic = "checkin"
-        session.topic_turns = 1
         return envelope(
             session,
             INTRO + "\n\n" + format_question(0),

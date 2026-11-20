@@ -1,6 +1,6 @@
 """Task agents for one support chat.
 
-Safety, check-in, support, and memory each have one job.
+Safety, check-in, understanding, guidance, support, and memory each have one job.
 The orchestrator calls them in that order. They do not diagnose.
 """
 

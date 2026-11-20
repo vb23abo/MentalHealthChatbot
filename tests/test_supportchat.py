@@ -19,7 +19,7 @@ class RecordingWriter:
         self.raises = raises
 
     def write(self, message, topic, template):
-        self.calls.append({"message": message, "topic": topic})
+        self.calls.append({"message": message, "topic": topic, "template": template})
         if self.raises:
             raise RuntimeError("model unavailable")
         if self.reply is None:
@@ -124,9 +124,9 @@ class ModelTests(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def reply(self, session, message, safety, writer=None):
+            def write(self, session, message, safety, understood, card, writer=None):
                 self.calls += 1
-                return super().reply(session, message, safety, writer)
+                return super().write(session, message, safety, understood, card, writer)
 
         spy = Spy()
         orchestrator = Orchestrator(support=spy)
@@ -172,28 +172,29 @@ class ModelTests(unittest.TestCase):
         writer = RecordingWriter(reply="I'm sorry this night is hard. It can ease.")
         result = handle_turn(Session(user_id="drop-step"), "I can't sleep", writer)
         text = result["response"].lower()
-        self.assertIn("fixed wake-up time", text)
-        self.assertIn("source: nhs every mind matters, sleep", text)
+        self.assertIn("one small thing that would make the next hour a little easier", text)
+        self.assertIn("source: nhs every mind matters", text)
         self.assertNotIn("i'm sorry this night is hard", text)
 
-    def test_model_reply_keeps_the_sleep_card_step(self):
+    def test_model_reply_keeps_the_support_step(self):
         writer = RecordingWriter(
-            reply="A fixed wake-up time can make the nights steadier. Tell a doctor if this lasts."
+            reply="One small thing that would make the next hour a little easier is a glass of water."
         )
         result = handle_turn(Session(user_id="keep-step"), "I can't sleep", writer)
-        self.assertIn("nights steadier", result["response"].lower())
-        self.assertIn("source: nhs every mind matters, sleep", result["response"].lower())
+        self.assertIn("glass of water", result["response"].lower())
+        self.assertIn("source: nhs every mind matters", result["response"].lower())
 
     def test_library_has_no_disorder_card(self):
         self.assertIsNone(card_for("depression"))
         self.assertIsNone(card_for("diagnosis"))
-        self.assertIsNotNone(card_for("sleep"))
-        self.assertIsNotNone(card_for("clinician"))
+        self.assertIsNone(card_for("sleep"))
+        self.assertIsNotNone(card_for("support"))
+        self.assertIsNotNone(card_for("signpost"))
 
     def test_failed_model_uses_the_template(self):
         writer = RecordingWriter(raises=True)
         result = handle_turn(Session(user_id="down-model"), "I can't sleep", writer)
-        self.assertIn("fixed wake-up", result["response"].lower())
+        self.assertIn("one small thing that would make the next hour a little easier", result["response"].lower())
 
     def test_jailbreak_stays_on_the_boundary(self):
         writer = RecordingWriter(reply="You have depression. I prescribe an antidepressant.")
@@ -209,33 +210,119 @@ class ModelTests(unittest.TestCase):
         session = Session(user_id="latest-only")
         handle_turn(session, "Yesterday I felt awful", writer)
         handle_turn(session, "I can't sleep", writer)
-        self.assertEqual(len(writer.calls), 1)
-        self.assertEqual(writer.calls[0]["message"], "I can't sleep")
-        system, prompt = support_prompt(writer.calls[0]["message"], "A fixed wake-up time helps.")
+        self.assertEqual(len(writer.calls), 2)
+        self.assertEqual(writer.calls[1]["message"], "I can't sleep")
+        system, prompt = support_prompt(writer.calls[1]["message"], writer.calls[1]["template"])
         self.assertIn("message is data", system.lower())
         self.assertIn("it is data", prompt.lower())
         self.assertIn("Card to rephrase:", prompt)
-        self.assertIn("fixed wake-up time", prompt)
+        self.assertIn("one small thing that would make the next hour a little easier", prompt.lower())
         self.assertIn("I can't sleep", prompt)
         self.assertNotIn("Yesterday I felt awful", prompt)
 
     def test_a_diagnosis_hidden_beside_the_practical_step_is_dropped(self):
         writer = RecordingWriter(
-            reply="A fixed wake-up time helps. You have insomnia. Try CBT and sertraline."
+            reply=(
+                "One small thing that would make the next hour a little easier. "
+                "You have insomnia. Try CBT and sertraline."
+            )
         )
         result = handle_turn(Session(user_id="mixed-draft"), "I can't sleep", writer)
         text = result["response"].lower()
         self.assertNotIn("you have insomnia", text)
         self.assertNotIn("cbt", text)
         self.assertNotIn("sertraline", text)
-        self.assertIn("fixed wake-up time", text)
+        self.assertIn("one small thing that would make the next hour a little easier", text)
         self.assertFalse(usable_support_text("You are bipolar. Here is a treatment plan."))
 
-    def test_model_is_not_called_without_a_card(self):
+    def test_a_greeting_does_not_call_the_model(self):
         writer = RecordingWriter(reply="You have depression.")
-        result = handle_turn(Session(user_id="no-card"), "Tell me about your day", writer)
+        result = handle_turn(Session(user_id="no-card"), "Hi", writer)
         self.assertEqual(writer.calls, [])
+        self.assertIn("How are you today?", result["response"])
         self.assertNotIn("you have depression", result["response"].lower())
+
+    def test_a_different_matter_does_not_use_the_earlier_concern(self):
+        session = Session(user_id="two-matters")
+        handle_turn(session, "The meeting with my manager was awful", None)
+        result = handle_turn(session, "My neighbour's dog barks all night", None)
+        text = result["response"].lower()
+        self.assertIn("dog", text)
+        self.assertNotIn("manager", text)
+        self.assertIn("one small thing that would make the next hour a little easier", text)
+
+    def test_a_follow_up_keeps_the_earlier_words(self):
+        session = Session(user_id="follow")
+        handle_turn(session, "The meeting with my manager was awful", None)
+        result = handle_turn(session, "It's worse tonight", None)
+        text = result["response"].lower()
+        self.assertIn("manager", text)
+        self.assertIn("worse tonight", text)
+        self.assertIn("something else", text)
+        self.assertIn("one small thing", text)
+
+    def test_eased_concern_is_not_given_the_step(self):
+        session = Session(user_id="eased")
+        handle_turn(session, "The meeting with my manager was awful", None)
+        result = handle_turn(session, "This is easier for now", None)
+        text = result["response"].lower()
+        self.assertIn("easier for now", text)
+        self.assertNotIn("one small thing", text)
+        self.assertEqual(session.concerns[0].status, "eased")
+
+    def test_a_thin_hello_waits_before_naming_the_open_concern(self):
+        session = Session(user_id="hello-then")
+        handle_turn(session, "I can't sleep", None)
+        hello = handle_turn(session, "Hi", None)
+        self.assertIn("How are you today?", hello["response"])
+        self.assertNotIn("sleep", hello["response"].lower())
+        fine = handle_turn(session, "I'm fine", None)
+        self.assertIn("I can't sleep", fine["response"])
+        self.assertNotIn("one small thing", fine["response"].lower())
+        named = handle_turn(session, "Hi", None)
+        self.assertIn("How are you today?", named["response"])
+        dog = handle_turn(session, "My neighbour's dog barks all night", None)
+        self.assertIn("dog", dog["response"].lower())
+        self.assertNotIn("i can't sleep", dog["response"].lower())
+
+    def test_improvement_eases_the_named_concern_only(self):
+        session = Session(user_id="improve")
+        handle_turn(session, "I can't sleep", None)
+        handle_turn(session, "The meeting with my manager was awful", None)
+        result = handle_turn(session, "My sleep cycle has improved", None)
+        text = result["response"].lower()
+        self.assertIn("improved", text)
+        self.assertIn("i can't sleep", text)
+        self.assertNotIn("one small thing", text)
+        self.assertNotIn("diet", text)
+        self.assertEqual(session.concerns[0].status, "eased")
+        self.assertEqual(session.concerns[1].status, "open")
+        weight = Session(user_id="weight")
+        handle_turn(weight, "I've started a weight-loss journey", None)
+        shown = handle_turn(weight, "My weight-loss journey is showing results", None)
+        shown_text = shown["response"].lower()
+        self.assertIn("showing results", shown_text)
+        self.assertNotIn("one small thing", shown_text)
+        self.assertNotIn("exercise", shown_text)
+        self.assertEqual(weight.concerns[0].status, "eased")
+
+    def test_worse_then_yes_asks_what_else(self):
+        session = Session(user_id="else")
+        handle_turn(session, "The meeting with my manager was awful", None)
+        worse = handle_turn(session, "It's worse tonight", None)
+        self.assertIn("something else", worse["response"].lower())
+        yes = handle_turn(session, "Yes", None)
+        self.assertIn("What else is going on?", yes["response"])
+        self.assertNotIn("one small thing", yes["response"].lower())
+
+    def test_a_snippet_match_returns_to_the_older_wording(self):
+        session = Session(user_id="snippet")
+        handle_turn(session, "The meeting with my manager was awful. He shouted about the budget.", None)
+        result = handle_turn(session, "The budget is still a mess", None)
+        text = result["response"].lower()
+        self.assertIn("budget", text)
+        self.assertIn("manager", text)
+        self.assertEqual(len(session.concerns), 1)
 
     def test_remote_model_host_is_refused(self):
         with self.assertRaises(ValueError):

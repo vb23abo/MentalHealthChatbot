@@ -25,8 +25,8 @@ class MemoryAgent:
     def login(self, username: str, password: str) -> str:
         return self.store.login(username, password)
 
-    def snapshot(self, user_id: int) -> dict:
-        return self.store.snapshot(user_id)
+    def snapshot(self, user_id: int, before_id: int | None = None) -> dict:
+        return self.store.snapshot(user_id, before_id)
 
     def clear(self, user_id: int) -> None:
         self.store.clear(user_id)

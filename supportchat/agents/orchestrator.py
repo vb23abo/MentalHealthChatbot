@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from supportchat.agents.checkin_agent import CheckInAgent
+from supportchat.agents.guidance_agent import GuidanceAgent
 from supportchat.agents.safety_agent import SafetyAgent
 from supportchat.agents.support_agent import SupportAgent
 from supportchat.agents.turn import checkin_state, envelope
+from supportchat.agents.understanding_agent import UnderstandingAgent
 from supportchat.dialogue import detect_intent
 from supportchat.session import Session
 
@@ -15,10 +17,14 @@ class Orchestrator:
         self,
         safety: SafetyAgent | None = None,
         checkin: CheckInAgent | None = None,
+        understanding: UnderstandingAgent | None = None,
+        guidance: GuidanceAgent | None = None,
         support: SupportAgent | None = None,
     ) -> None:
         self.safety = safety or SafetyAgent()
         self.checkin = checkin or CheckInAgent()
+        self.understanding = understanding or UnderstandingAgent()
+        self.guidance = guidance or GuidanceAgent()
         self.support = support or SupportAgent()
 
     def handle(self, session: Session, message: str, writer=None) -> dict:
@@ -37,4 +43,10 @@ class Orchestrator:
         if started is not None:
             return started
 
-        return self.support.reply(session, message, safety, writer)
+        held = self.support.boundary(session, message, safety)
+        if held is not None:
+            return held
+
+        understood = self.understanding.read(session, message)
+        card = self.guidance.choose(understood)
+        return self.support.write(session, message, safety, understood, card, writer)

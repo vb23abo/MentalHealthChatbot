@@ -1,7 +1,8 @@
-"""Local support cards.
+"""The two support cards.
 
-Each card is one concern, one practical step, and a public source.
-There is no card for a disorder, a medication, or a treatment plan.
+Every described concern uses the support card. Asking how to talk with
+someone uses the signpost card. There is no card per life domain, and no
+card for a disorder, a medication, or a treatment plan.
 """
 
 from __future__ import annotations
@@ -19,43 +20,19 @@ class Card:
     support_line: str = _SUPPORT_LINE
 
 
-CARDS: dict[str, Card] = {
-    "sleep": Card(
-        "sleep",
-        "fixed wake-up time",
-        "NHS Every Mind Matters, sleep",
-    ),
-    "worry": Card(
-        "worry",
-        "breathe out for six",
-        "NHS Every Mind Matters, worry",
-    ),
-    "panic": Card(
-        "panic",
-        "both feet on the floor",
-        "NHS, panic attacks",
-    ),
-    "sadness": Card(
-        "sadness",
-        "one thing that would make the next hour a little easier",
-        "NHS Every Mind Matters, low mood",
-    ),
-    "lonely": Card(
-        "lonely",
-        "short message",
-        "NHS, loneliness",
-    ),
-    "anger": Card(
-        "anger",
-        "pause before you send",
-        "NHS, anger",
-    ),
-    "clinician": Card(
-        "clinician",
-        "one small thing in the next hour",
-        "NHS, talking to a GP",
-    ),
-}
+SUPPORT = Card(
+    "support",
+    "one small thing that would make the next hour a little easier",
+    "NHS Every Mind Matters",
+)
+
+SIGNPOST = Card(
+    "signpost",
+    "one small thing that would make the next hour a little easier, and talk to a person",
+    "NHS, talking to someone",
+)
+
+CARDS = {"support": SUPPORT, "signpost": SIGNPOST}
 
 
 def card_for(topic: str) -> Card | None:
@@ -66,7 +43,7 @@ def present(card: Card, body: str) -> str:
     """The reply the person sees when the model is off, or when a draft is dropped."""
     text = body.strip()
     if card.practical.lower() not in text.lower():
-        text = f"{text} {card.practical}."
+        text = f"{text} {card.practical[0].upper() + card.practical[1:]}."
     return _with_source(card, text)
 
 

@@ -33,7 +33,8 @@ class Session:
     checkin_answers: list[int] = field(default_factory=list)
     last_checkin: dict | None = None
     last_topic: str | None = None
-    topic_turns: int = 0
+    concerns: list = field(default_factory=list)
+    pending: str = ""
     user_lines: list[str] = field(default_factory=list)
     visit_note: str | None = None
     country: str = "US"

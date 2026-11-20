@@ -108,7 +108,7 @@
 
     <section class="gate" id="gate">
       <h2>Your account</h2>
-      <p>Sign in so you can leave and come back to this chat. Recent messages stay in a database on this computer. This is not therapy, a diagnosis, or emergency care.</p>
+      <p>Sign in so you can leave and come back to this chat. Messages stay on this computer until you delete them. This is not therapy, a diagnosis, or emergency care.</p>
       <p>This chat is for adults. If you are under 18, tell a parent, caregiver, or another trusted adult, and use the crisis line above or the IASP helpline directory.</p>
       <form class="account" id="account">
         <label>Username
@@ -125,6 +125,7 @@
 
     <main id="chat-panel">
       <p class="who" id="who"></p>
+      <button type="button" class="secondary" id="earlier" hidden>Earlier messages</button>
       <p class="who">This chat is for adults. If you are under 18, tell a parent, caregiver, or another trusted adult, and use the crisis line above or the IASP helpline directory.</p>
       <div id="transcript" role="log" aria-live="polite" aria-relevant="additions"></div>
       <form id="chat">
@@ -139,7 +140,7 @@
         </div>
       </form>
     </main>
-    <p class="hint">Saved messages expire after 30 days. A check-in score is not a diagnosis. If you are in danger, use the resources above rather than this chat.</p>
+    <p class="hint">Saved messages stay on this computer until you delete them. A check-in score is not a diagnosis. If you are in danger, use the resources above rather than this chat.</p>
   </div>
   <script>
     const gate = document.getElementById("gate");
@@ -151,7 +152,9 @@
     const TOKEN_KEY = "supportToken";
     const COUNTRY_KEY = "supportCountry";
     const copyNote = document.getElementById("copy-note");
+    const earlier = document.getElementById("earlier");
     let token = localStorage.getItem(TOKEN_KEY);
+    let earliestId = null;
     let noteText = "";
 
     function authHeaders() {
@@ -174,14 +177,23 @@
         addBubble("assistant", memory.resume, memory.last_safety && memory.last_safety !== "none");
       }
       showNote(memory && memory.visit_note);
-      (memory && memory.turns ? memory.turns : []).forEach((turn) => {
-        addBubble(
-          turn.role === "user" ? "you" : "assistant",
-          visibleText(turn.text, memory.disclaimer),
-          turn.safety && turn.safety !== "none"
-        );
-      });
+      const turns = memory && memory.turns ? memory.turns : [];
+      noteEarliest(turns, memory && memory.earlier);
+      turns.forEach((turn) => addTurn(turn, memory.disclaimer));
       input.focus();
+    }
+
+    function noteEarliest(turns, more) {
+      earliestId = turns.length ? turns[0].id : null;
+      earlier.hidden = !more;
+    }
+
+    function addTurn(turn, disclaimer) {
+      addBubble(
+        turn.role === "user" ? "you" : "assistant",
+        visibleText(turn.text, disclaimer),
+        turn.safety && turn.safety !== "none"
+      );
     }
 
     function showGate() {
@@ -190,6 +202,34 @@
       panel.classList.remove("open");
       gate.hidden = false;
     }
+
+    earlier.addEventListener("click", async () => {
+      if (!earliestId) {
+        return;
+      }
+      const response = await fetch("/memory?before=" + earliestId, { headers: authHeaders() });
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      const turns = data.turns || [];
+      if (!turns.length) {
+        earlier.hidden = true;
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      turns.forEach((turn) => {
+        addBubble(
+          turn.role === "user" ? "you" : "assistant",
+          visibleText(turn.text, data.disclaimer),
+          turn.safety && turn.safety !== "none",
+          null,
+          fragment
+        );
+      });
+      transcript.insertBefore(fragment, transcript.firstChild);
+      noteEarliest(turns, data.earlier);
+    });
 
     async function openSession() {
       const response = await fetch("/memory", { headers: authHeaders() });
@@ -205,7 +245,7 @@
       showChat(data);
     }
 
-    function addBubble(role, text, urgent, resources) {
+    function addBubble(role, text, urgent, resources, parent) {
       const bubble = document.createElement("div");
       bubble.className = "bubble " + (role === "you" ? "you" : "assistant");
       if (urgent) bubble.classList.add("urgent");
@@ -230,8 +270,8 @@
         });
         bubble.appendChild(list);
       }
-      transcript.appendChild(bubble);
-      bubble.scrollIntoView({ block: "nearest" });
+      (parent || transcript).appendChild(bubble);
+      if (!parent) bubble.scrollIntoView({ block: "nearest" });
     }
 
     async function send(message) {

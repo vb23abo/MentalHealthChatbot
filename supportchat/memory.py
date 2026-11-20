@@ -1,7 +1,7 @@
 """SQLite memory for returning users.
 
-Stores an account, a short profile, and recent messages. Older messages
-expire. The profile has no disorder label.
+Stores an account, concern threads, and the conversation. Chats stay until
+the person deletes them. The profile has no disorder label.
 """
 
 from __future__ import annotations
@@ -17,22 +17,12 @@ from pathlib import Path
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from supportchat.concerns import Concern
 from supportchat.helplines import crisis_sentence, normalize_country
 from supportchat.session import Session
 
 RECENT_LIMIT = 30
-RETENTION_DAYS = 30
 TOKEN_DAYS = 7
-
-TOPIC_PHRASES = {
-    "sleep": "sleep",
-    "worry": "worry",
-    "panic": "panic",
-    "sadness": "low mood",
-    "lonely": "feeling alone",
-    "anger": "anger",
-    "checkin": "a check-in",
-}
 
 _USERNAME = re.compile(r"^[A-Za-z0-9_]{3,32}$")
 
@@ -48,10 +38,9 @@ def resume_line(topic: str | None, safety: str, country: str = "US") -> str | No
             + crisis_sentence(country)
             + " If you want to talk, I'm here."
         )
-    phrase = TOPIC_PHRASES.get(topic or "")
-    if not phrase:
+    if not topic:
         return None
-    return f"Last time you were talking about {phrase}. Want to pick that up?"
+    return "How are you today?"
 
 
 def _now() -> str:
@@ -78,11 +67,9 @@ class MemoryStore:
         self,
         path: str,
         recent_limit: int = RECENT_LIMIT,
-        retention_days: int = RETENTION_DAYS,
         token_days: int = TOKEN_DAYS,
     ) -> None:
         self.recent_limit = recent_limit
-        self.retention_days = retention_days
         self.token_days = token_days
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +93,6 @@ class MemoryStore:
             CREATE TABLE IF NOT EXISTS profiles (
                 user_id INTEGER PRIMARY KEY REFERENCES users(id),
                 last_topic TEXT,
-                topic_turns INTEGER NOT NULL DEFAULT 0,
                 user_turns INTEGER NOT NULL DEFAULT 0,
                 checkin_step INTEGER,
                 checkin_answers TEXT NOT NULL DEFAULT '[]',
@@ -128,6 +114,8 @@ class MemoryStore:
         )
         self._ensure_visit_note()
         self._ensure_country()
+        self._ensure_concerns()
+        self._ensure_pending()
         self._conn.commit()
 
     def register(self, username: str, password: str) -> str:
@@ -188,15 +176,14 @@ class MemoryStore:
 
     def load_session(self, user_id: int) -> Session:
         with self._lock:
-            self._purge_old(user_id)
             profile = self._profile(user_id)
-            self._conn.commit()
             answers = json.loads(profile["checkin_answers"] or "[]")
             last_checkin = json.loads(profile["last_checkin"]) if profile["last_checkin"] else None
             lines = self._conn.execute(
                 "SELECT text FROM turns WHERE user_id = ? AND role = 'user' ORDER BY id ASC",
                 (user_id,),
             ).fetchall()
+            concerns = self._concerns_from(profile)
             return Session(
                 user_id=str(user_id),
                 user_turns=profile["user_turns"],
@@ -204,10 +191,11 @@ class MemoryStore:
                 checkin_answers=answers,
                 last_checkin=last_checkin,
                 last_topic=profile["last_topic"],
-                topic_turns=profile["topic_turns"],
+                concerns=concerns,
                 user_lines=[row["text"] for row in lines],
                 visit_note=profile["visit_note"],
                 country=profile["country"] or "US",
+                pending=profile["pending"] or "",
             )
 
     def save_exchange(self, user_id: int, session: Session, user_text: str, assistant_text: str, safety: str) -> None:
@@ -224,14 +212,13 @@ class MemoryStore:
             self._conn.execute(
                 """
                 UPDATE profiles SET
-                    last_topic = ?, topic_turns = ?, user_turns = ?,
+                    last_topic = ?, user_turns = ?,
                     checkin_step = ?, checkin_answers = ?, last_checkin = ?,
-                    last_safety = ?, visit_note = ?, country = ?, updated_at = ?
+                    last_safety = ?, visit_note = ?, country = ?, concerns = ?, pending = ?, updated_at = ?
                 WHERE user_id = ?
                 """,
                 (
                     session.last_topic,
-                    session.topic_turns,
                     session.user_turns,
                     session.checkin_step,
                     json.dumps(session.checkin_answers),
@@ -239,23 +226,48 @@ class MemoryStore:
                     safety,
                     session.visit_note,
                     normalize_country(session.country),
+                    json.dumps([concern.to_json() for concern in session.concerns]),
+                    session.pending or "",
                     now,
                     user_id,
                 ),
             )
-            self._trim(user_id)
             self._conn.commit()
 
-    def snapshot(self, user_id: int) -> dict:
+    def snapshot(self, user_id: int, before_id: int | None = None) -> dict:
         with self._lock:
-            self._purge_old(user_id)
             profile = self._profile(user_id)
             user = self._conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
-            turns = self._conn.execute(
-                "SELECT role, text, safety FROM turns WHERE user_id = ? ORDER BY id ASC",
-                (user_id,),
-            ).fetchall()
-            self._conn.commit()
+            if before_id is None:
+                turns = self._conn.execute(
+                    """
+                    SELECT id, role, text, safety FROM turns
+                    WHERE user_id = ? ORDER BY id DESC LIMIT ?
+                    """,
+                    (user_id, self.recent_limit),
+                ).fetchall()
+            else:
+                turns = self._conn.execute(
+                    """
+                    SELECT id, role, text, safety FROM turns
+                    WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?
+                    """,
+                    (user_id, before_id, self.recent_limit),
+                ).fetchall()
+            turns = list(reversed(turns))
+            earliest = turns[0]["id"] if turns else None
+            earlier = 0
+            if earliest is not None:
+                earlier = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM turns WHERE user_id = ? AND id < ?",
+                    (user_id, earliest),
+                ).fetchone()["n"]
+            if before_id is None and profile["last_topic"] and profile["last_safety"] != "self_harm":
+                self._conn.execute(
+                    "UPDATE profiles SET pending = ? WHERE user_id = ?",
+                    ("today", user_id),
+                )
+                self._conn.commit()
         return {
             "username": user["username"],
             "resume": resume_line(profile["last_topic"], profile["last_safety"], profile["country"] or "US"),
@@ -263,8 +275,9 @@ class MemoryStore:
             "last_topic": profile["last_topic"],
             "last_safety": profile["last_safety"],
             "visit_note": profile["visit_note"],
+            "earlier": earlier,
             "turns": [
-                {"role": row["role"], "text": row["text"], "safety": row["safety"]}
+                {"id": row["id"], "role": row["role"], "text": row["text"], "safety": row["safety"]}
                 for row in turns
             ],
         }
@@ -276,9 +289,9 @@ class MemoryStore:
             self._conn.execute(
                 """
                 UPDATE profiles SET
-                    last_topic = NULL, topic_turns = 0, user_turns = 0,
+                    last_topic = NULL, user_turns = 0,
                     checkin_step = NULL, checkin_answers = '[]', last_checkin = NULL,
-                    last_safety = 'none', visit_note = NULL, updated_at = ?
+                    last_safety = 'none', visit_note = NULL, concerns = '[]', pending = '', updated_at = ?
                 WHERE user_id = ?
                 """,
                 (now, user_id),
@@ -289,6 +302,27 @@ class MemoryStore:
         columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profiles)")}
         if columns and "visit_note" not in columns:
             self._conn.execute("ALTER TABLE profiles ADD COLUMN visit_note TEXT")
+
+    def _ensure_concerns(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profiles)")}
+        if columns and "concerns" not in columns:
+            self._conn.execute("ALTER TABLE profiles ADD COLUMN concerns TEXT NOT NULL DEFAULT '[]'")
+
+    def _concerns_from(self, profile: sqlite3.Row) -> list[Concern]:
+        raw = profile["concerns"] if "concerns" in profile.keys() else "[]"
+        stored = json.loads(raw or "[]")
+        concerns = [Concern.from_json(item) for item in stored if isinstance(item, dict) and item.get("label")]
+        if concerns:
+            return concerns
+        topic = profile["last_topic"]
+        if topic and topic != "checkin":
+            return [Concern(topic)]
+        return []
+
+    def _ensure_pending(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profiles)")}
+        if columns and "pending" not in columns:
+            self._conn.execute("ALTER TABLE profiles ADD COLUMN pending TEXT NOT NULL DEFAULT ''")
 
     def _ensure_country(self) -> None:
         columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profiles)")}
@@ -318,28 +352,6 @@ class MemoryStore:
         if row is None:
             raise AuthError("Account not found.")
         return row
-
-    def _purge_old(self, user_id: int) -> None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.retention_days)).isoformat()
-        self._conn.execute(
-            "DELETE FROM turns WHERE user_id = ? AND created_at < ?",
-            (user_id, cutoff),
-        )
-
-    def _trim(self, user_id: int) -> None:
-        self._purge_old(user_id)
-        extra = self._conn.execute(
-            """
-            SELECT id FROM turns WHERE user_id = ?
-            ORDER BY id DESC LIMIT -1 OFFSET ?
-            """,
-            (user_id, self.recent_limit),
-        ).fetchall()
-        if not extra:
-            return
-        ids = [row["id"] for row in extra]
-        placeholders = ",".join("?" for _ in ids)
-        self._conn.execute(f"DELETE FROM turns WHERE id IN ({placeholders})", ids)
 
     def close(self) -> None:
         with self._lock:

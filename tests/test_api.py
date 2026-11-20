@@ -133,20 +133,27 @@ class ApiTests(unittest.TestCase):
             later_headers = {"Authorization": f"Bearer {signed_in.get_json()['token']}"}
             memory = later.get("/memory", headers=later_headers)
             body = memory.get_json()
-            self.assertEqual(body["last_topic"], "sleep")
-            self.assertIn("sleep", body["resume"].lower())
+            self.assertEqual(body["last_topic"], "I can't sleep")
+            self.assertEqual(body["resume"], "How are you today?")
             self.assertIn("I can't sleep", [turn["text"] for turn in body["turns"]])
             self.assertNotIn("diagnosis", body)
 
+            fine = later.post("/conversation", json={"message": "I'm fine"}, headers=later_headers)
+            fine_text = fine.get_json()["response"].lower()
+            self.assertIn("i can't sleep", fine_text)
+            self.assertNotIn("one small thing", fine_text)
+
             follow = later.post("/conversation", json={"message": "It's been weeks"}, headers=later_headers)
-            self.assertIn("weeks", follow.get_json()["response"].lower())
+            follow_text = follow.get_json()["response"].lower()
+            self.assertIn("weeks", follow_text)
+            self.assertIn("i can't sleep", follow_text)
             self.assertFalse(follow.get_json()["crisis"])
 
-            free = later.post("/conversation", json={"message": "I lie awake until 4"}, headers=later_headers)
+            free = later.post("/conversation", json={"message": "My neighbour's dog barks all night"}, headers=later_headers)
             reply = free.get_json()["response"].lower()
-            self.assertIn("lie awake", reply)
-            self.assertIn("sleep", reply)
-            self.assertEqual(later.get("/memory", headers=later_headers).get_json()["last_topic"], "sleep")
+            self.assertIn("dog", reply)
+            self.assertNotIn("i can't sleep", reply)
+            self.assertIn("dog", later.get("/memory", headers=later_headers).get_json()["last_topic"].lower())
         finally:
             later.application.extensions["memory"].close()
 
@@ -250,19 +257,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(follow.status_code, 200)
         reply = follow.get_json()["response"].lower()
         self.assertIn("lie awake", reply)
-        self.assertIn("sleep", reply)
+        self.assertIn("one small thing that would make the next hour a little easier", reply)
         self.assertNotIn("gone on for a while", reply)
 
-    def test_recent_turns_are_trimmed(self):
+    def test_page_opens_on_a_window_and_keeps_earlier_turns(self):
         client = create_app(self.db_path, recent_limit=4).test_client()
         try:
             created = client.post("/register", json={"username": "trimmer", "password": "test-pass-1"})
             headers = {"Authorization": f"Bearer {created.get_json()['token']}"}
             for word in ("hello", "I feel sad", "thanks"):
                 client.post("/conversation", json={"message": word}, headers=headers)
-            turns = client.get("/memory", headers=headers).get_json()["turns"]
-            self.assertEqual(len(turns), 4)
-            self.assertNotIn("hello", [turn["text"] for turn in turns])
+            page = client.get("/memory", headers=headers).get_json()
+            self.assertEqual(len(page["turns"]), 4)
+            self.assertGreater(page["earlier"], 0)
+            self.assertNotIn("hello", [turn["text"] for turn in page["turns"]])
+            older = client.get("/memory?before=" + str(page["turns"][0]["id"]), headers=headers).get_json()
+            self.assertIn("hello", [turn["text"] for turn in older["turns"]])
         finally:
             client.application.extensions["memory"].close()
 

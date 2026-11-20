@@ -136,7 +136,9 @@ def create_app(
         user_id, error = require_user()
         if error:
             return error
-        snapshot = memory.snapshot(user_id)
+        raw_before = request.args.get("before", "")
+        before_id = int(raw_before) if raw_before.isdigit() else None
+        snapshot = memory.snapshot(user_id, before_id)
         snapshot["disclaimer"] = BOUNDARY
         return jsonify(snapshot)
 
