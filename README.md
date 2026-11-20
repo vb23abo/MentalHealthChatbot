@@ -40,7 +40,7 @@ python -m eval.run_eval
 
 ## Folder
 
-This directory is the project. The support chat above is the current app. The MSc submission — report, slides, React page, and the backend from that submission — is in `submission/`. React dependencies are not stored; `npm install` inside `submission/front_end` restores them.
+This directory is the support chat.
 
 ## Local model
 
